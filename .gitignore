@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+.DS_Store
+.playwright-cli/
+# Copied from node_modules by tools/vendor.js
+runtime/phaser.min.js
+runtime/three.module.min.js
+runtime/jsm/
+docs/index.html

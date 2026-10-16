@@ -1,0 +1,61 @@
+{
+  "name": "gamey",
+  "productName": "Gamey",
+  "version": "0.1.0",
+  "description": "Make web games by chatting with Claude Code, and watch them being built live",
+  "main": "main.js",
+  "author": "Luqman Hakeem",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "vendor": "node tools/vendor.js",
+    "postinstall": "node tools/vendor.js",
+    "dist": "electron-builder --mac dir --publish never && ./tools/sign.sh"
+  },
+  "dependencies": {
+    "codemirror": "^5.65.21"
+  },
+  "devDependencies": {
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
+    "phaser": "^3.90.0",
+    "three": "^0.170.0"
+  },
+  "allowScripts": {
+    "electron@38.8.6": true
+  },
+  "build": {
+    "appId": "com.luqmanhakeem.gamey",
+    "productName": "Gamey",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "renderer/**/*",
+      "runtime/**/*",
+      "node_modules/codemirror/lib/**/*",
+      "node_modules/codemirror/mode/javascript/**/*",
+      "node_modules/codemirror/mode/xml/**/*",
+      "node_modules/codemirror/mode/css/**/*",
+      "node_modules/codemirror/mode/htmlmixed/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "src/mcp-server.js"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "target": [
+        "dir"
+      ],
+      "identity": null
+    }
+  }
+}

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: http://127.0.0.1:*; frame-src http://127.0.0.1:*;">
+  <title>Gamey</title>
+  <link rel="stylesheet" href="../node_modules/codemirror/lib/codemirror.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M7 9v4M5 11h4M15.5 10.5h.01M18 12.5h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/><rect x="2" y="6" width="20" height="12" rx="5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+    </span>Gamey</div>
+    <div class="picker no-drag">
+      <select id="project-select" title="Your games" aria-label="Your games"></select>
+      <button id="project-new" class="btn small">+ New game</button>
+      <button id="project-folder" class="btn small ghost" title="Show the game folder in Finder">Folder</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="no-drag top-actions">
+      <div id="usage" class="usage" hidden></div>
+      <button id="undo" class="btn small ghost" title="Undo Claude's last change" disabled>Undo</button>
+      <button id="history" class="btn small ghost" title="Earlier versions">History</button>
+      <span id="live-link" class="live-link" hidden></span>
+      <button id="publish" class="btn small primary" title="Publish to itch.io">
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Publish
+      </button>
+    </div>
+  </header>
+
+  <!-- First run: no games yet -->
+  <section id="welcome" class="welcome" hidden>
+    <div class="welcome-card">
+      <div class="welcome-art" aria-hidden="true"><span>👾</span><span>⭐</span><span>🕹️</span></div>
+      <h1>Make a game by chatting</h1>
+      <p class="muted">Describe a game and Claude builds it. You watch it come together on the right, piece by piece, then play it.</p>
+      <button class="btn primary big" id="welcome-new">Make my first game</button>
+    </div>
+  </section>
+
+  <div class="workspace" id="workspace" hidden>
+    <aside class="left" id="left">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="chat" role="tab">Chat</button>
+        <button class="tab" data-tab="code" role="tab">Code</button>
+      </nav>
+
+      <div class="pane" id="pane-chat">
+        <div class="chat-head">
+          <span id="chat-status" class="muted small-text" aria-live="polite"></span>
+          <button id="chat-new" class="btn small ghost" title="Start a new conversation">New chat</button>
+        </div>
+        <div id="messages" class="messages"></div>
+        <form id="composer" class="composer">
+          <div id="attachments" class="attachments" hidden></div>
+          <textarea id="prompt" rows="3" placeholder="Describe your game, or what to change..." aria-label="Message to Claude"></textarea>
+          <div class="composer-row">
+            <button type="button" id="attach" class="btn small ghost icon-only" title="Attach a picture" aria-label="Attach a picture">
+              <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M21 12.5 12.6 21a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+            <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+            <span class="muted small-text hint">Enter to send · Shift+Enter for a new line</span>
+            <div class="spacer"></div>
+            <button type="button" id="stop" class="btn small danger" hidden>Stop</button>
+            <button type="submit" id="send" class="btn small primary">Send</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="pane" id="pane-code" hidden>
+        <div class="code-head">
+          <select id="file-select" aria-label="File"></select>
+          <span id="code-state" class="muted small-text"></span>
+          <div class="spacer"></div>
+          <button id="code-save" class="btn small primary" disabled>Save</button>
+        </div>
+        <div id="editor" class="editor"></div>
+        <div id="code-binary" class="code-binary muted" hidden>This file is not text. <span id="binary-preview"></span></div>
+      </div>
+    </aside>
+
+    <div class="splitter" id="splitter" role="separator" aria-orientation="vertical"></div>
+
+    <main class="stage">
+      <div class="stage-bar">
+        <button id="play" class="btn small" title="Play or pause the game (P)" aria-label="Pause">
+          <svg class="i-pause" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+          <svg class="i-play" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg>
+          <span id="play-label">Pause</span>
+        </button>
+        <button id="restart" class="btn small ghost" title="Start the game again (R)">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Restart
+        </button>
+        <button id="pick" class="btn small ghost" title="Point at something in the game and tell Claude what to change">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M5 3l14 7-6 2-2 6z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>
+          Point &amp; change
+        </button>
+        <label class="toggle" title="Freeze the game while Claude builds, so you can watch each piece arrive">
+          <input type="checkbox" id="freeze" checked> <span>Pause while building</span>
+        </label>
+        <div class="spacer"></div>
+        <button id="errors" class="badge-btn" hidden></button>
+        <span id="obj-count" class="muted small-text"></span>
+        <button id="toggle-scene" class="btn small ghost" title="Show or hide the object list">Objects</button>
+        <button id="open-browser" class="btn small ghost icon-only" title="Open the game in your browser" aria-label="Open in browser">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+
+      <div class="stage-body">
+        <div class="screen-wrap" id="screen-wrap">
+          <iframe id="preview" title="Game preview" allow="autoplay; fullscreen"></iframe>
+          <div class="building" id="building" hidden>
+            <span class="pulse"></span><span id="building-text">Claude is building</span>
+          </div>
+          <div class="pick-hint" id="pick-hint" hidden>Click something in the game · Esc to cancel</div>
+          <div class="empty-stage" id="empty-stage" hidden>
+            <div>
+              <div class="empty-grid" aria-hidden="true"></div>
+              <p><b>The stage is empty.</b><br>Tell Claude what game to make, and watch each piece land here.</p>
+            </div>
+          </div>
+        </div>
+        <aside class="scene-list" id="scene-list">
+          <div class="scene-head"><b>Objects</b><span id="scene-mode" class="mode-chip"></span></div>
+          <ul id="objects" class="objects"></ul>
+        </aside>
+      </div>
+
+      <div class="feed" id="feed" aria-label="Build feed">
+        <span class="feed-label">Build feed</span>
+        <div class="feed-items" id="feed-items"><span class="feed-empty muted">Changes appear here as Claude makes them</span></div>
+      </div>
+
+      <div class="drawer" id="error-drawer" hidden>
+        <div class="drawer-head"><b>Game errors</b><div class="spacer"></div>
+          <button id="fix-errors" class="btn small primary">Ask Claude to fix</button>
+          <button id="clear-errors" class="btn small ghost">Clear</button>
+          <button id="close-errors" class="btn small ghost icon-only" aria-label="Close">✕</button>
+        </div>
+        <ul id="error-list" class="error-list"></ul>
+      </div>
+    </main>
+  </div>
+
+  <!-- New game -->
+  <dialog id="new-dialog" class="dialog wide">
+    <form method="dialog" id="new-form">
+      <h2>New game</h2>
+      <label class="field"><span>Name</span><input id="new-name" required maxlength="60" placeholder="e.g. Cat Jump" autocomplete="off"></label>
+      <div class="field"><span>Kind</span>
+        <div class="modes">
+          <label class="mode-card"><input type="radio" name="mode" value="2d" checked><div><b>2D</b><small>Sprites and shapes on a flat stage. Platformers, shooters, puzzles. Built on Phaser.</small></div></label>
+          <label class="mode-card"><input type="radio" name="mode" value="3d"><div><b>3D</b><small>A world with depth, lights and a camera. Runners, explorers, stackers. Built on Three.js.</small></div></label>
+        </div>
+      </div>
+      <div class="field"><span>Start from</span><div id="ideas" class="ideas-grid"></div></div>
+      <p id="new-error" class="error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" id="new-cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="new-create">Create game</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- History -->
+  <dialog id="history-dialog" class="dialog">
+    <h2>Earlier versions</h2>
+    <p class="muted small-text">Gamey keeps a copy before every change Claude makes. Going back is undoable too.</p>
+    <ul id="history-list" class="history-list"></ul>
+    <div class="dialog-actions"><button class="btn" id="history-close">Close</button></div>
+  </dialog>
+
+  <!-- Publish -->
+  <dialog id="publish-dialog" class="dialog">
+    <h2>Publish to itch.io</h2>
+    <div id="pub-nobutler" hidden>
+      <p>Publishing uses <b>butler</b>, itch.io's upload tool. Install it, run <code>butler login</code> once in Terminal, then come back.</p>
+      <p><a href="#" data-ext="https://itch.io/docs/butler/">How to install butler</a></p>
+    </div>
+    <div id="pub-form">
+      <p class="muted small-text">Make the page once on itch.io (<a href="#" data-ext="https://itch.io/game/new">itch.io/game/new</a>, Kind of project: <b>HTML</b>, and tick "This file will be played in the browser" after the first upload). Then every Publish updates it.</p>
+      <div class="row2">
+        <label class="field"><span>itch.io user</span><input id="pub-user" autocomplete="off"></label>
+        <label class="field"><span>Page name</span><input id="pub-slug" autocomplete="off"></label>
+      </div>
+      <p class="muted small-text" id="pub-url"></p>
+      <pre id="pub-log" class="pub-log" hidden></pre>
+      <p id="pub-error" class="error" hidden></p>
+      <p id="pub-done" class="ok" hidden></p>
+    </div>
+    <div class="dialog-actions">
+      <button class="btn ghost" id="pub-close">Close</button>
+      <button class="btn primary" id="pub-go">Publish</button>
+    </div>
+  </dialog>
+
+  <script src="../node_modules/codemirror/lib/codemirror.js"></script>
+  <script src="../node_modules/codemirror/mode/javascript/javascript.js"></script>
+  <script src="../node_modules/codemirror/mode/xml/xml.js"></script>
+  <script src="../node_modules/codemirror/mode/css/css.js"></script>
+  <script src="../node_modules/codemirror/mode/htmlmixed/htmlmixed.js"></script>
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
