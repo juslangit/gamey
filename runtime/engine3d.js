@@ -4,6 +4,10 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BaseObj, cssColor, changed } from './core.js';
+import { buildTerrain, waterMesh, modelParts, scatterPlaces, buildScatter, buildGrass, Atmosphere, Finish, TIME, FOCUS, FOCUS_ON, recolor } from './world3d.js';
+
+// Object types that make up the world itself; any change to one rebuilds it.
+const WORLD = new Set(['terrain', 'scatter', 'grass', 'water']);
 
 const D2R = Math.PI / 180;
 const ACCENT = '#8b7bff';
@@ -94,7 +98,10 @@ export class Engine {
 
   async init(settings, root) {
     const r = (this.renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true }));
-    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // 1.5 looks sharp on Retina screens at half the pixels of 2; auto quality may lower it.
+    this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    r.setPixelRatio(this.dpr);
+    this.perf = { t: 0, frames: 0, level: 0 };
     r.shadowMap.enabled = true;
     r.shadowMap.type = THREE.PCFSoftShadowMap;
     r.outputColorSpace = THREE.SRGBColorSpace;
@@ -112,6 +119,10 @@ export class Engine {
     this.sun.shadow.normalBias = 0.02;
     this.scene.add(this.hemi, this.sun, this.sun.target);
     this.mixers = new Set();
+    this.terrains = new Set();
+    this.solids = new Set();
+    this.atmos = new Atmosphere(r, this.scene);
+    this.finish = new Finish(r, this.scene, this.camera);
     this.resize();
     new ResizeObserver(() => this.resize()).observe(root);
     this.applySettings(settings, {}, false);
@@ -131,14 +142,34 @@ export class Engine {
     g.pointer.ground = (y = 0) => {
       this.ray.setFromCamera(new THREE.Vector2(g.pointer.nx || 0, g.pointer.ny || 0), this.camera);
       const p = new THREE.Vector3();
+      if (this.terrains.size) {
+        const hit = this.ray.intersectObjects([...this.terrains].map((o) => o.terrain.mesh), false)[0];
+        if (hit) return { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+      }
       return this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), -y), p) ? { x: p.x, y: p.y, z: p.z } : null;
     };
+    // Height of the ground (terrain) at x, z, or 0 where there is none.
+    g.heightAt = (x, z) => this.heightAt(x, z) ?? 0;
+  }
+
+  heightAt(x, z) {
+    let best = null;
+    for (const o of this.terrains) {
+      if (!o.alive) continue;
+      const d = o.def;
+      const w = d.w ?? 200, dd = d.d ?? d.w ?? 200;
+      if (Math.abs(x - (d.x || 0)) > w / 2 || Math.abs(z - (d.z || 0)) > dd / 2) continue;
+      const h = (d.y || 0) + o.terrain.height(x, z);
+      if (best === null || h > best) best = h;
+    }
+    return best;
   }
 
   resize() {
     const w = this.root.clientWidth || 800;
     const h = this.root.clientHeight || 600;
     this.renderer.setSize(w, h);
+    this.finish?.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
   }
@@ -177,15 +208,33 @@ export class Engine {
       ctx.fillRect(0, 0, 2, 256);
       const tex = new THREE.CanvasTexture(c);
       tex.colorSpace = THREE.SRGBColorSpace;
+      tex.mapping = THREE.EquirectangularReflectionMapping;
       this.scene.background = tex;
     } else {
       this.scene.background = new THREE.Color(cssColor(bg));
     }
+    const bgTex = this.scene.background?.isTexture ? this.scene.background : null;
     const fogColor = Array.isArray(bg) ? bg[bg.length - 1] : bg;
     if (s.fog) {
       const f = s.fog === true ? {} : s.fog;
-      this.scene.fog = new THREE.Fog(cssColor(f.color ?? fogColor), f.near ?? 20, f.far ?? 90);
+      this.scene.fog = f.density
+        ? new THREE.FogExp2(cssColor(f.color ?? fogColor), f.density)
+        : new THREE.Fog(cssColor(f.color ?? fogColor), f.near ?? 20, f.far ?? 90);
     } else this.scene.fog = null;
+    this.scene.environmentIntensity = s.envLight ?? 1;
+    this.finish.apply(s.post);
+    this.atmos.apply(s, bgTex).then((dir) => {
+      if (this.settings !== s) return;
+      // A sky decides where the sun is, unless the scene places the sun itself.
+      if (dir && !(s.sun && ('x' in s.sun || 'y' in s.sun))) {
+        this.sunOffset = dir.clone().multiplyScalar(60);
+        if (this.sunOffset.y < 4) this.sunOffset.y = 4;
+        if (!s.sun?.color) this.sun.color.setHSL(0.08, 0.8, dir.y < 0.2 ? 0.7 : 0.93);
+        this.placeSun(this.follow ? this.follow.view.position : new THREE.Vector3());
+      }
+      this.renderer.toneMappingExposure = s.post?.exposure ?? this.atmos.exposure ?? 1;
+      if (!s.sky) this.renderer.toneMappingExposure = s.post?.exposure ?? 1;
+    });
     this.hemi.intensity = s.ambient ?? 1.2;
     const sun = s.sun || {};
     this.sunOffset = new THREE.Vector3(sun.x ?? 10, sun.y ?? 18, sun.z ?? 8);
@@ -197,7 +246,7 @@ export class Engine {
     sc.left = sc.bottom = -area;
     sc.right = sc.top = area;
     sc.near = 0.5;
-    sc.far = 200;
+    sc.far = Math.max(200, area * 4);
     sc.updateProjectionMatrix();
     this.placeSun(new THREE.Vector3());
     const cam = s.camera || {};
@@ -220,6 +269,8 @@ export class Engine {
 
   frame(dt) {
     const g = this.game;
+    TIME.value += dt;
+    this.autoQuality(dt);
     g.tick(dt);
     if (g.active) this.step(dt);
     g.flushContacts();
@@ -231,15 +282,35 @@ export class Engine {
       if (!this.sel.obj.alive) this.select(null);
       else this.sel.helper.update();
     }
-    this.renderer.render(this.scene, this.camera);
+    this.finish.render(dt);
     g.endFrame();
+  }
+
+  // When the game runs slowly for a few seconds, trade sharpness for smoothness.
+  autoQuality(dt) {
+    const p = this.perf;
+    if (document.hidden || this.settings.quality === 'high') return;
+    p.t += dt;
+    p.frames++;
+    if (p.t < 1.5) return;
+    const fps = p.frames / p.t;
+    p.t = p.frames = 0;
+    if (fps > 40 || p.level >= 3) return;
+    p.level++;
+    if (p.level === 1) this.dpr = Math.max(1, this.dpr - 0.25);
+    if (p.level === 2) this.dpr = 1;
+    if (p.level === 3) this.finish.ao.enabled = false;
+    this.renderer.setPixelRatio(this.dpr);
+    this.resize();
   }
 
   updateCamera(dt) {
     const cam = this.camera;
     if (this.follow && !this.follow.alive) this.follow = this.game.objs.get(this.follow.id) || null;
+    FOCUS_ON.value = this.follow ? 1 : 0;
     if (this.follow) {
       const t = this.follow.view.position;
+      FOCUS.value.set(t.x, t.y + 0.8, t.z);
       const want = t.clone().add(this.followOffset);
       const smooth = this.settings.camera?.smooth ?? 0.1;
       cam.position.lerp(want, 1 - Math.pow(1 - smooth, dt * 60));
@@ -292,7 +363,8 @@ export class Engine {
   }
 
   step(dt) {
-    const objs = [...this.game.objs.values()].filter((o) => o.alive && o.half);
+    // World builders are never bodies: terrain is ground by itself, solid scatter has its own trunks.
+    const objs = [...this.game.objs.values()].filter((o) => o.alive && o.half && !WORLD.has(o.def.type));
     const solids = [];
     const sensors = [];
     const dyn = [];
@@ -327,6 +399,8 @@ export class Engine {
       this.resolve(o, 'y', solids, dt);
       p.z += b.vz * dt;
       this.resolve(o, 'z', solids, dt);
+      this.groundOn(o);
+      this.trunks(o);
     }
     for (let i = 0; i < dyn.length; i++) {
       for (let j = i + 1; j < dyn.length; j++) {
@@ -349,6 +423,44 @@ export class Engine {
     for (const s of sensors) {
       for (const o of dyn) if (this.overlaps(s, o)) this.game.contact(s, o);
       for (const o of solids) if (o.physics === 'kinematic' && this.overlaps(s, o)) this.game.contact(s, o);
+    }
+  }
+
+  // Stand dynamic objects on the terrain.
+  groundOn(o) {
+    if (!this.terrains.size) return;
+    const p = o.view.position;
+    const h = this.heightAt(p.x + o.off.x, p.z + o.off.z);
+    if (h === null) return;
+    const bottom = this.lo(o, 'y');
+    if (bottom < h) {
+      p.y += h - bottom;
+      if (o.body.vy < 0) o.body.vy = o.def.bounce && o.body.vy < -2 ? -o.body.vy * o.def.bounce : 0;
+      o.body.onGround = true;
+    } else if (bottom < h + 0.08 && o.body.vy <= 0) o.body.onGround = true;
+  }
+
+  // Keep dynamic objects out of solid scattered things (tree trunks, rocks).
+  trunks(o) {
+    if (!this.solids.size) return;
+    const p = o.view.position;
+    const rad = Math.max(o.half.x, o.half.z);
+    for (const s of this.solids) {
+      if (!s.alive || !s.grid) continue;
+      const cell = s.grid.cell;
+      const gx = Math.floor(p.x / cell), gz = Math.floor(p.z / cell);
+      for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) {
+        for (const t of s.grid.map.get(`${gx + i},${gz + j}`) || []) {
+          const dx = p.x - t.x, dz = p.z - t.z, min = t.radius + rad;
+          const d2 = dx * dx + dz * dz;
+          if (d2 >= min * min || d2 < 1e-8) continue;
+          if (this.lo(o, 'y') > t.y + t.top) continue;
+          const d = Math.sqrt(d2);
+          p.x = t.x + (dx / d) * min;
+          p.z = t.z + (dz / d) * min;
+          this.game.contact(o, s);
+        }
+      }
     }
   }
 
@@ -415,6 +527,7 @@ export class Engine {
   }
 
   prepare(def) {
+    if (def.type === 'scatter') return Promise.all(scatterAssets(def).map((a) => this.loadModel(a).catch(() => null)));
     if (!def.asset) return;
     if (def.type === 'model') {
       return this.loadModel(def.asset).catch((e) => this.game.report(new Error(`Could not load the model ${def.asset}: ${e.message || e}`), ''));
@@ -424,7 +537,7 @@ export class Engine {
 
   async reloadAsset(path) {
     this.ver[path] = (this.ver[path] || 0) + 1;
-    const users = [...this.game.objs.values()].filter((o) => o.def.asset === path);
+    const users = [...this.game.objs.values()].filter((o) => o.def.asset === path || scatterAssets(o.def).includes(path) || o.def.normalMap === path || o.def.roughnessMap === path);
     if (!users.length) return;
     await this.prepare(users[0].def);
     for (const o of users) {
@@ -452,7 +565,8 @@ export class Engine {
   place(view, def) {
     view.position.set(def.x || 0, def.y || 0, def.z || 0);
     view.rotation.set((def.rx || 0) * D2R, (def.ry || 0) * D2R, (def.rz || 0) * D2R);
-    const s = def.scale ?? 1;
+    // World builders use "scale" for their copies, not for themselves.
+    const s = WORLD.has(def.type) ? 1 : def.scale ?? 1;
     if (typeof s === 'object') view.scale.set(s.x ?? 1, s.y ?? 1, s.z ?? 1);
     else view.scale.setScalar(s);
     view.visible = def.visible !== false;
@@ -483,8 +597,27 @@ export class Engine {
         m.color.set(cssColor(def.color, '#ffffff'));
         m.needsUpdate = true;
       });
+      this.extraMaps(m, def);
     }
     return m;
+  }
+
+  // Normal and roughness maps that go with a texture (Poly Haven sets have both).
+  extraMaps(m, def) {
+    const rep = def.repeat ?? 1;
+    for (const [key, slot] of [['normalMap', 'normalMap'], ['roughnessMap', 'roughnessMap']]) {
+      if (!def[key]) continue;
+      this.loadTexture(def[key]).then((t) => {
+        if (!t) return;
+        const tex = t.clone();
+        tex.colorSpace = THREE.NoColorSpace;
+        tex.needsUpdate = true;
+        tex.repeat.set(Array.isArray(rep) ? rep[0] : rep, Array.isArray(rep) ? rep[1] : rep);
+        m[slot] = tex;
+        if (slot === 'roughnessMap') m.roughness = 1;
+        m.needsUpdate = true;
+      });
+    }
   }
 
   geometry(def) {
@@ -522,6 +655,8 @@ export class Engine {
       view.add(mesh);
     } else if (def.type === 'model') {
       if (def.asset) this.attachModel(obj, def);
+    } else if (WORLD.has(def.type)) {
+      this.buildWorld(obj, def);
     } else if (def.type === 'text' || def.type === 'emoji') {
       view.add(textSprite(def));
     } else if (def.type === 'light') {
@@ -539,6 +674,96 @@ export class Engine {
     this.measure(obj);
   }
 
+  buildWorld(obj, def) {
+    this.terrains.delete(obj);
+    this.solids.delete(obj);
+    obj.terrain = obj.grid = null;
+    obj.groundVersion = this.groundVersion || 0;
+    const onGround = def.onTerrain !== false && this.terrains.size ? (x, z) => this.heightAt(x, z) ?? def.y ?? 0 : null;
+    if (def.type === 'terrain') {
+      const t = buildTerrain(def);
+      obj.terrain = t;
+      if (def.asset) {
+        const m = t.mesh.material;
+        this.loadTexture(def.asset).then((tex) => {
+          if (!tex) return;
+          const c = tex.clone();
+          c.needsUpdate = true;
+          const rep = def.repeat ?? 20;
+          c.repeat.set(Array.isArray(rep) ? rep[0] : rep, Array.isArray(rep) ? rep[1] : rep);
+          m.map = c;
+          m.needsUpdate = true;
+        });
+        this.extraMaps(m, { ...def, repeat: def.repeat ?? 20 });
+      }
+      obj.view.add(t.group);
+      this.terrains.add(obj);
+      this.groundVersion = (this.groundVersion || 0) + 1;
+      // Things already scattered over the ground follow the new shape.
+      this.regrow(obj);
+      return;
+    }
+    if (def.type === 'water') {
+      obj.view.add(waterMesh(def));
+      return;
+    }
+    if (def.type === 'grass') {
+      const { group } = buildGrass(def, onGround);
+      group.position.y = 0;
+      obj.view.add(group);
+      return;
+    }
+    // scatter
+    const assets = scatterAssets(def);
+    if (!assets.length) return this.game.warn(`Scatter "${def.id}" needs "assets": a list of model files.`);
+    const token = (obj.buildToken = (obj.buildToken || 0) + 1);
+    Promise.all(assets.map((a) => this.loadModel(a).catch(() => null))).then((loaded) => {
+      if (!obj.alive || obj.buildToken !== token) return;
+      const ok = loaded.map((g, i) => (g ? { info: modelParts(g.scene), i } : null)).filter(Boolean);
+      if (!ok.length) return this.game.warn(`Scatter "${def.id}": none of its models could be loaded.`);
+      if (ok.some((m) => m.info.skinned)) this.game.warn(`Scatter "${def.id}": animated characters cannot be scattered; use model objects for them.`);
+      const others = [...this.solids].filter((s) => s !== obj && s.alive && s.places && s.def.spacing !== 0).flatMap((s) => (def.avoidOthers === false ? [] : s.places.map((p) => ({ x: p.x, z: p.z, r: (p.radius || 0) + 0.3 }))));
+      const places = scatterPlaces(def, ok, onGround, others);
+      const { group, meshes } = buildScatter(def, ok.map((m) => m.info), places);
+      obj.view.add(group);
+      obj.places = places;
+      if (def.solid) {
+        const cell = 4;
+        const map = new Map();
+        places.forEach((p) => {
+          const info = ok[p.model].info;
+          const t = { x: p.x, y: p.y, z: p.z, radius: Math.max(0.15, p.radius), top: info.size.y * 0.9 };
+          const k = `${Math.floor(p.x / cell)},${Math.floor(p.z / cell)}`;
+          if (!map.has(k)) map.set(k, []);
+          map.get(k).push(t);
+        });
+        obj.grid = { cell, map };
+        this.solids.add(obj);
+      }
+      if (obj.growing) this.grow(meshes);
+      this.measure(obj);
+    });
+  }
+
+  // Rebuild scattered things and grass after the ground changed.
+  regrow(except) {
+    clearTimeout(this.regrowTimer);
+    this.regrowTimer = setTimeout(() => {
+      for (const o of this.game.objs.values()) {
+        if (o === except || !o.alive || (o.def.type !== 'scatter' && o.def.type !== 'grass') || o.def.onTerrain === false) continue;
+        if (o.groundVersion === this.groundVersion) continue;
+        this.build(o, o.def);
+      }
+    }, 30);
+  }
+
+  // Scattered copies appear a few at a time, like they are being planted.
+  grow(meshes) {
+    const full = meshes.map((m) => m.count);
+    meshes.forEach((m) => (m.count = 0));
+    this.tween(1400, (t) => t, (k) => meshes.forEach((m, i) => (m.count = Math.ceil(full[i] * k))));
+  }
+
   attachModel(obj, def) {
     this.loadModel(def.asset)
       .then((gltf) => {
@@ -554,6 +779,7 @@ export class Engine {
               n.material = n.material.clone();
               n.material.color?.set(cssColor(def.color));
             }
+            if (def.recolor && n.material) n.material = Array.isArray(n.material) ? n.material.map((m) => recolor(m, def.recolor)) : recolor(n.material, def.recolor);
           }
         });
         if (def.size) {
@@ -585,8 +811,14 @@ export class Engine {
 
   morph(obj, prev, def, animate) {
     const v = obj.view;
-    const looks = ['w', 'h', 'd', 'r', 'rTop', 'tube', 'text', 'emoji', 'size', 'opacity', 'glow', 'glowStrength', 'roughness', 'metalness', 'flat', 'wireframe', 'repeat', 'kind', 'intensity', 'range', 'angle', 'shadow', 'animation', 'font'];
-    if (changed(prev, def, looks)) {
+    const looks = ['recolor', 'w', 'h', 'd', 'r', 'rTop', 'tube', 'text', 'emoji', 'size', 'opacity', 'glow', 'glowStrength', 'roughness', 'metalness', 'flat', 'wireframe', 'repeat', 'kind', 'intensity', 'range', 'angle', 'shadow', 'animation', 'font'];
+    const keys = WORLD.has(def.type) ? Object.keys({ ...prev, ...def }).filter((k) => k !== 'visible' && k !== 'id') : looks;
+    if (changed(prev, def, keys)) {
+      if (WORLD.has(def.type)) {
+        this.place(obj.view, def);
+        this.build(obj, def);
+        return;
+      }
       this.build(obj, def);
       if (animate) this.pulse(obj);
     }
@@ -632,6 +864,12 @@ export class Engine {
 
   remove(obj, animate) {
     const v = obj.view;
+    this.terrains.delete(obj);
+    this.solids.delete(obj);
+    if (obj.def.type === 'terrain') {
+      this.groundVersion = (this.groundVersion || 0) + 1;
+      this.regrow(obj);
+    }
     if (this.follow === obj) this.follow = null;
     if (this.sel?.obj === obj) this.select(null);
     if (obj.mixer) this.mixers.delete(obj.mixer);
@@ -670,6 +908,16 @@ export class Engine {
 
   popIn(obj) {
     const v = obj.view;
+    if (WORLD.has(obj.def.type)) {
+      if (obj.def.type === 'scatter') obj.growing = true;
+      else {
+        const target = v.scale.clone();
+        v.scale.set(target.x, 0.0001, target.z);
+        this.tween(700, easeInOut, (k) => v.scale.set(target.x, Math.max(0.0001, target.y * k), target.z));
+      }
+      this.label(obj.id, v.position.clone().add(new THREE.Vector3(0, 2, 0)));
+      return;
+    }
     const target = v.scale.clone();
     v.scale.setScalar(0.0001);
     this.tween(560, easeBackOut, (k) => v.scale.copy(target).multiplyScalar(Math.max(0.0001, k)));
@@ -807,6 +1055,11 @@ function textSprite(def) {
   const size = def.size ?? (isEmoji ? 1 : 0.6);
   sprite.scale.set((size * c.width) / c.height, size, 1);
   return sprite;
+}
+
+function scatterAssets(def) {
+  if (def.type !== 'scatter') return [];
+  return (Array.isArray(def.assets) ? def.assets : def.asset ? [def.asset] : []).filter((a) => typeof a === 'string');
 }
 
 function isShared(n) {

@@ -9,6 +9,7 @@ const { Projects } = require('./src/projects');
 const { History } = require('./src/history');
 const { Scene, format } = require('./src/scene');
 const { IDEAS } = require('./src/templates');
+const { Library } = require('./src/library');
 const log = require('./src/log');
 
 let win = null;
@@ -16,6 +17,8 @@ let projects = null;
 let server = null;
 let current = null; // { name, dir, scene, session, history, watcher, turn, notes, errors }
 let previewRect = null;
+let library = null;
+let libraryStatus = { step: 'idle', text: '' };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -91,6 +94,10 @@ function gameFacts(p) {
     `- Scripts: ${scripts.length ? scripts.join(', ') : 'none yet'}`,
     `- Assets: ${assets.length ? assets.slice(0, 40).join(', ') + (assets.length > 40 ? ` (+${assets.length - 40} more)` : '') : 'none yet'}`,
   ];
+  if (library?.ready) {
+    const n = library.summary();
+    lines.push(`- Asset library: ${n.models} stylized 3D models, ${n.sprites} 2D sprites, ${n.realistic} realistic Poly Haven models/textures/skies (mcp__gamey__library_search)`);
+  } else lines.push(`- Asset library: still downloading (${libraryStatus.text || 'starting'}); search may come back empty`);
   const pub = loadPublishInfo(p);
   if (pub) lines.push(`- Published on itch.io at ${pub.url}`);
   return lines.join('\n');
@@ -263,6 +270,16 @@ async function onTool(name, args) {
     }
     case 'asset_download':
       return text(await downloadAsset(p, args));
+    case 'library_search':
+      return librarySearch(p, args);
+    case 'library_use': {
+      if (!library?.ready) throw new Error('The asset library is still downloading. Try again in a minute.');
+      const ids = (Array.isArray(args.ids) ? args.ids : [args.ids]).filter(Boolean).map(String).slice(0, 30);
+      if (!ids.length) throw new Error('Give the ids of the items to add, from library_search.');
+      return text(await library.use(ids, p.dir, { resolution: args.resolution }));
+    }
+    case 'art_review':
+      return artReview(p);
     case 'screenshot': {
       const img = await capturePreview();
       const errs = p.errors.slice(-10).map((e) => `${e.level}: ${e.text}`);
@@ -314,6 +331,137 @@ async function downloadAsset(p, { url, name }) {
     if (size.width) info = ` It is ${size.width}x${size.height} pixels.`;
   }
   return `Saved as assets/${rel} (${Math.round(buf.length / 1024)} KB).${info} Use "asset": "assets/${rel}".`;
+}
+
+/* ---------- The asset library ---------- */
+
+function startLibrary() {
+  library = new Library(path.join(projects.root, '.library'));
+  server.mounts.lib = library.root;
+  server.mounts.runtime = path.join(__dirname, 'runtime');
+  server.mounts.app = path.join(__dirname, 'renderer');
+  const progress = (st) => {
+    libraryStatus = st;
+    send('library:status', st);
+    if (st.step === 'done') log.info(`Library ready${st.failed?.length ? `, failed: ${st.failed.join('; ')}` : ''}`);
+  };
+  library.build({ progress, measure: measureModels }).catch((err) => {
+    log.error('Library:', err);
+    progress({ step: 'error', text: `The asset library could not be downloaded: ${err.message}` });
+  });
+}
+
+// Draw a thumbnail of each model in a hidden window and read its size and animations.
+let thumbWin = null;
+async function measureModels(items) {
+  if (!thumbWin || thumbWin.isDestroyed()) {
+    thumbWin = new BrowserWindow({ show: false, width: 256, height: 256, webPreferences: { offscreen: true, backgroundThrottling: false } });
+    await thumbWin.loadURL(`${server.url}__gamey/app/thumbs.html`);
+    const start = Date.now();
+    while (!(await thumbWin.webContents.executeJavaScript('!!window.thumbsReady').catch(() => false))) {
+      if (Date.now() - start > 15000) throw new Error('The thumbnail page did not start.');
+      await sleep(100);
+    }
+  }
+  const urls = items.map((i) => `${server.url}__gamey/lib/packs/${i.pack}/${i.file.split('/').map(encodeURIComponent).join('/')}`);
+  const results = await thumbWin.webContents.executeJavaScript(`renderThumbs(${JSON.stringify(urls)})`, true);
+  return results.map((r, k) => {
+    if (!r || r.error) return { error: r?.error || 'failed' };
+    const rel = `${items[k].pack}/${items[k].file.replace(/\.(glb|gltf)$/i, '')}.png`;
+    const to = path.join(library.root, 'thumbs', rel);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.writeFileSync(to, Buffer.from(r.png.split(',')[1], 'base64'));
+    items[k].thumb = rel;
+    return r.meta;
+  });
+}
+
+// Search the library and show the results as one numbered picture.
+async function librarySearch(p, args) {
+  if (!library?.ready) return text(`The asset library is still downloading (${libraryStatus.text || 'starting'}). Try again in a minute, or build from shapes for now.`);
+  const mode = p.scene.current.settings.mode === '3d' ? '3d' : '2d';
+  const found = library.search({ query: args.query, mode, kind: args.kind, style: args.style, pack: args.pack, limit: args.limit || 16 });
+  if (!found.length) return text(`Nothing in the library matches "${args.query}". Try a simpler word (tree, rock, house, knight, coin) or another kind/style.`);
+  const lines = found.map((it, i) => `#${i + 1} ${library.describe(it)}`);
+  let img = null;
+  try {
+    img = await contactSheet(found, args.query);
+  } catch (err) {
+    log.warn('Contact sheet:', err.message);
+  }
+  const looks = [...new Set(found.map((f) => f.look))];
+  const content = [];
+  if (img) content.push({ type: 'image', data: img.toString('base64'), mimeType: 'image/jpeg' });
+  content.push({
+    type: 'text',
+    text: `${found.length} results for "${args.query}"${looks.length > 1 ? ` (looks: ${looks.join(', ')} — keep one look per game)` : ''}:\n${lines.join('\n')}\n\nAdd the ones you want with mcp__gamey__library_use {"ids": [...]}.`,
+  });
+  return { content };
+}
+
+async function contactSheet(items, title) {
+  const cols = items.length > 12 ? 5 : 4;
+  const cell = 190;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const cells = items.map((it, i) => {
+    const src = library.thumbUrl(it, server.url);
+    const pic = src ? `<img src="${esc(src)}">` : '<div class="none">no picture</div>';
+    return `<div class="c">${pic}<b>#${i + 1}</b><span>${esc(it.id.split('/').slice(1).join('/'))}</span></div>`;
+  }).join('');
+  const html = `<!doctype html><meta charset="utf-8"><style>
+    body{margin:0;background:#1b1e25;font:12px -apple-system,system-ui,sans-serif;color:#dfe3ea}
+    h1{font-size:13px;margin:8px 10px;color:#9aa3b2;font-weight:500}
+    .g{display:grid;grid-template-columns:repeat(${cols},${cell}px);gap:6px;padding:0 8px 8px}
+    .c{position:relative;height:${cell + 22}px;background:#2a2f3a;border-radius:6px;overflow:hidden}
+    .c img{width:${cell}px;height:${cell}px;object-fit:contain;image-rendering:auto;background:repeating-conic-gradient(#30353f 0% 25%,#2a2f3a 0% 50%) 0 0/16px 16px}
+    .c b{position:absolute;top:4px;left:5px;background:#8b7bff;color:#fff;border-radius:4px;padding:1px 5px;font-size:12px}
+    .c span{position:absolute;bottom:3px;left:5px;right:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px}
+    .none{height:${cell}px;display:grid;place-items:center;color:#777}
+  </style><h1>${esc(title || '')}</h1><div class="g">${cells}</div>`;
+  const id = Math.random().toString(36).slice(2);
+  server.pages.set(id, html);
+  const width = cols * (cell + 6) + 12;
+  const height = Math.ceil(items.length / cols) * (cell + 28) + 40;
+  const w = new BrowserWindow({ show: false, width, height, useContentSize: true, webPreferences: { offscreen: true } });
+  try {
+    await Promise.race([w.loadURL(`${server.url}__gamey/page/${id}`), sleep(8000)]);
+    await w.webContents.executeJavaScript(
+      'Promise.race([Promise.all([...document.images].map(i => i.complete ? 0 : new Promise(r => { i.onload = i.onerror = r; }))), new Promise(r => setTimeout(r, 6000))]).then(() => 1)',
+      true
+    );
+    await sleep(120);
+    let img = await w.webContents.capturePage();
+    if (img.getSize().width > 1100) img = img.resize({ width: 1100 });
+    return img.toJPEG(82);
+  } finally {
+    w.destroy();
+    server.pages.delete(id);
+  }
+}
+
+const ART_CHECKLIST = `Look at this picture as a player seeing the game for the first time, and score each from 1 to 5:
+1. Real art: are characters, trees, buildings and props library models/sprites, not plain boxes, cones, circles or emoji?
+2. Density and life: is the world full (clusters, variety, small props, grass, scattered rocks), with no large flat empty areas?
+3. Depth: foreground, middle and background layers; distance fades into fog/sky; nothing ends at a visible edge.
+4. Light: a sky (sky preset or HDRI, or a gradient), a warm sun with shadows, nothing too dark or washed out.
+5. Colour: one coherent palette, one art style (do not mix low-poly and realistic), the player stands out.
+6. Framing: the camera shows the action well; the HUD is readable and does not cover it.
+Anything under 4: fix it now (more and varied scatter, grass, a sky preset, fog, better camera, post settings), then call art_review again. Stop when everything is 4 or more, or after three rounds.`;
+
+async function artReview(p) {
+  let img;
+  try {
+    img = await capturePreview();
+  } catch {
+    const r = await testPlay({ seconds: 0.8 });
+    img = Buffer.from(r.content[0].data, 'base64');
+  }
+  return {
+    content: [
+      { type: 'image', data: img.toString('base64'), mimeType: 'image/jpeg' },
+      { type: 'text', text: ART_CHECKLIST },
+    ],
+  };
 }
 
 // What the user sees in the preview right now.
@@ -417,6 +565,7 @@ function handle(channel, fn) {
 
 function registerIpc() {
   handle('app:info', () => ({ version: app.getVersion(), root: projects.root }));
+  handle('library:status', () => ({ ...libraryStatus, summary: library?.ready ? library.summary() : null }));
   handle('projects:list', () => ({ projects: projects.list(), last: loadConfig().lastProject || null }));
   handle('projects:create', (name, mode) => projects.create(name, mode === '3d' ? '3d' : '2d'));
   handle('projects:open', (name) => openProject(name));
@@ -507,8 +656,11 @@ app.whenReady().then(async () => {
     send('game:log', entry);
   };
   await server.start();
+  // GAMEY_DEBUG lets a test script call Claude's tools through the main process inspector.
+  if (process.env.GAMEY_DEBUG) global.gameyDebug = { onTool, library: () => library };
   registerIpc();
   createWindow();
+  startLibrary();
 });
 
 app.on('window-all-closed', () => {

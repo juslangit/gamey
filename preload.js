@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('gamey', {
     onChanged: on('history:changed'),
   },
   usage: { onChanged: on('usage') },
+  library: { status: call('library:status'), onStatus: on('library:status') },
   preview: { rect: call('preview:rect') },
   publish: {
     info: call('publish:info'),

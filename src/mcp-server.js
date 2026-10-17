@@ -57,6 +57,39 @@ const TOOLS = [
     },
   },
   {
+    name: 'library_search',
+    description:
+      "Search Gamey's built-in library of free (CC0) game art and see the results as one numbered picture plus a list of ids. 3D games get stylized low-poly models (Kenney, KayKit: nature, forests, towns, castles, dungeons, characters with animations, vehicles, space, food...) and realistic Poly Haven models, PBR ground/wall textures and HDRI skies. 2D games get Kenney sprites (platformer tiles, characters with animation frames, enemies, backgrounds, space shooter, top-down, UI). Search before you build anything visible; one or two plain words work best (\"pine tree\", \"rock\", \"knight\", \"grass ground\", \"sunset sky\").",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What you need, e.g. "pine tree", "wooden house", "skeleton enemy", "forest ground".' },
+        kind: { type: 'string', enum: ['model', 'sprite', 'texture', 'hdri'], description: 'Only this kind: model (3D), sprite (2D), texture (3D surface), hdri (3D sky).' },
+        style: { type: 'string', enum: ['stylized', 'realistic'], description: 'Only this art style. Keep one style per game.' },
+        pack: { type: 'string', description: 'Only this pack, e.g. "nature-kit" (to keep a matching look).' },
+        limit: { type: 'number', description: 'How many results, up to 40. Default 16.' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'library_use',
+    description: 'Add library items to this game (copies them into assets/lib/, downloading Poly Haven files at 1k). Returns, for each, exactly how to use it: the asset path, its natural size in metres or pixels, and its animations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'Ids from library_search, e.g. ["nature-kit/tree_pineDefaultA", "polyhaven/forest_ground_04"].' },
+        resolution: { type: 'string', enum: ['1k', '2k'], description: 'Poly Haven texture/sky size. Default 1k (2k for a sky the player looks at a lot).' },
+      },
+      required: ['ids'],
+    },
+  },
+  {
+    name: 'art_review',
+    description: 'Look at the game the way a player does and score it against Gamey\'s art checklist (real art, density, depth, light, colour, framing). Use it after building the world and after big visual changes; fix what scores under 4.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'screenshot',
     description: 'See the live preview exactly as the user sees it right now. Also returns any errors the game reported.',
     inputSchema: { type: 'object', properties: {} },

@@ -1,7 +1,7 @@
 {
   "name": "gamey",
   "productName": "Gamey",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Make web games by chatting with Claude Code, and watch them being built live",
   "main": "main.js",
   "author": "Luqman Hakeem",

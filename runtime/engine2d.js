@@ -54,6 +54,20 @@ class Obj2D extends BaseObj {
   get text() { return this.view.text; }
   set text(t) { this.view.setText?.(String(t)); }
   flip(on = true) { this.view.setFlipX?.(on); }
+  // Play one of the sprite's frame animations by name: obj.play("walk").
+  play(name) {
+    const a = this.def.animations?.[name];
+    if (!a || this.anim?.name === name) return;
+    this.anim = { name, ...frameList(a), t: 0, i: 0 };
+    this.game.engine.showFrame(this);
+  }
+  get animations() { return Object.keys(this.def.animations || {}); }
+}
+
+// An animation is a list of pictures, or {frames, fps, loop}.
+function frameList(a) {
+  const frames = Array.isArray(a) ? a : a.frames || [];
+  return { frames, fps: a.fps ?? 8, loop: a.loop !== false };
 }
 
 export class Engine {
@@ -203,6 +217,7 @@ export class Engine {
       this.physOn = on;
     }
     g.tick(Math.min(dt, 0.05));
+    this.animate(Math.min(dt, 0.05));
     g.flushContacts();
     this.paintSelection();
     g.endFrame();
@@ -247,7 +262,31 @@ export class Engine {
   }
 
   prepare(def) {
-    if (def.asset && (def.type === 'sprite' || def.type === 'tiled')) return this.loadTex(def.asset);
+    const paths = [];
+    if (def.asset && (def.type === 'sprite' || def.type === 'tiled')) paths.push(def.asset);
+    if (def.type === 'sprite') for (const a of Object.values(def.animations || {})) paths.push(...frameList(a).frames);
+    if (paths.length) return Promise.all([...new Set(paths)].map((p) => this.loadTex(p)));
+  }
+
+  showFrame(obj) {
+    const f = obj.anim.frames[obj.anim.i];
+    if (f && this.scene.textures.exists(this.keyFor(f)) && obj.view.texture?.key !== this.keyFor(f)) {
+      obj.view.setTexture(this.keyFor(f));
+      this.size(obj.view, obj.def);
+    }
+  }
+
+  animate(dt) {
+    for (const o of this.game.objs.values()) {
+      const a = o.anim;
+      if (!a || !o.alive || a.frames.length < 2) continue;
+      a.t += dt;
+      const step = 1 / Math.max(0.1, a.fps);
+      if (a.t < step) continue;
+      a.t %= step;
+      a.i = a.loop ? (a.i + 1) % a.frames.length : Math.min(a.i + 1, a.frames.length - 1);
+      this.showFrame(o);
+    }
   }
 
   async reloadAsset(path) {
@@ -329,7 +368,13 @@ export class Engine {
     if (def.visible === false) v.setVisible(false);
     if (def.flipX && v.setFlipX) v.setFlipX(true);
     if (def.flipY && v.setFlipY) v.setFlipY(true);
+    // Parallax: 0 stays fixed on screen (far sky), 0.3 drifts slowly (hills), 1 moves with the world.
+    if (def.scroll !== undefined) v.setScrollFactor(def.scroll);
     this.addBody(obj, def);
+    if (def.type === 'sprite' && def.animations) {
+      const first = def.animation || Object.keys(def.animations)[0];
+      if (first) obj.play(first);
+    }
     if (this.settings.camera?.follow === def.id) this.followFromSettings();
     return obj;
   }
@@ -387,7 +432,7 @@ export class Engine {
   canMorph(obj, def) {
     const prev = obj.def;
     if ((prev.type || 'rect') !== (def.type || 'rect')) return false;
-    if (changed(prev, def, ['asset', 'physics', 'font', 'bold', 'gravity', 'bounce', 'drag', 'bounds', 'maxSpeed', 'pushable', 'vx', 'vy'])) return false;
+    if (changed(prev, def, ['asset', 'animations', 'animation', 'scroll', 'physics', 'font', 'bold', 'gravity', 'bounce', 'drag', 'bounds', 'maxSpeed', 'pushable', 'vx', 'vy'])) return false;
     const moving = ['dynamic', 'kinematic', 'sensor'].includes(def.physics);
     if (moving && changed(prev, def, ['w', 'h', 'r', 'scale', 'size'])) return false;
     return true;

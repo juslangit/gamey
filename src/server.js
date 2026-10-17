@@ -40,6 +40,10 @@ class PreviewServer {
     this.key = crypto.randomBytes(16).toString('hex');
     this.onTool = null;
     this.onLog = null;
+    // Folders served under /__gamey/<name>/ (the asset library, Gamey's runtime) and
+    // pages Gamey makes on the fly (/__gamey/page/<id>), for its own hidden windows.
+    this.mounts = {};
+    this.pages = new Map();
     this.server = http.createServer((req, res) => this.handle(req, res));
   }
 
@@ -87,11 +91,24 @@ class PreviewServer {
       });
     }
     if (urlPath === '/__gamey/tool' && req.method === 'POST') return this.tool(req, res);
+    const page = urlPath.match(/^\/__gamey\/page\/([\w-]+)$/);
+    if (page) {
+      const html = this.pages.get(page[1]);
+      if (!html) return this.notFound(res, 'Not found.');
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+      return res.end(html);
+    }
+    const mount = urlPath.match(/^\/__gamey\/([\w-]+)\/(.+)$/);
+    if (mount && this.mounts[mount[1]]) return this.sendFile(req, res, this.mounts[mount[1]], '/' + mount[2]);
 
     if (!this.root) return this.notFound(res, 'No game is open.');
-    let file = path.normalize(path.join(this.root, urlPath));
-    if (file !== this.root && !file.startsWith(this.root + path.sep)) return this.notFound(res, 'Not found.');
-    if (path.relative(this.root, file).split(path.sep).some((part) => part.startsWith('.'))) return this.notFound(res, 'Not found.');
+    return this.sendFile(req, res, this.root, urlPath);
+  }
+
+  sendFile(req, res, root, urlPath) {
+    let file = path.normalize(path.join(root, urlPath));
+    if (file !== root && !file.startsWith(root + path.sep)) return this.notFound(res, 'Not found.');
+    if (path.relative(root, file).split(path.sep).some((part) => part.startsWith('.'))) return this.notFound(res, 'Not found.');
 
     fs.stat(file, (err, stat) => {
       if (!err && stat.isDirectory()) file = path.join(file, 'index.html');

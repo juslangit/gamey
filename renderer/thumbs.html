@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- Hidden page Gamey uses to draw a thumbnail of every library model and measure it. -->
+<script type="importmap">{ "imports": { "three": "/__gamey/runtime/three.module.min.js", "three/addons/": "/__gamey/runtime/jsm/" } }</script>
+<style>html,body{margin:0;background:#20242c}</style>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const SIZE = 256;
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+renderer.setSize(SIZE, SIZE);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envScene = new THREE.Scene();
+envScene.add(new THREE.Mesh(new THREE.SphereGeometry(10), new THREE.MeshBasicMaterial({ color: '#b8c4d6', side: THREE.BackSide })));
+scene.environment = pmrem.fromScene(envScene).texture;
+scene.add(new THREE.HemisphereLight('#ffffff', '#666a75', 1.4));
+const sun = new THREE.DirectionalLight('#ffffff', 2.2);
+sun.position.set(3, 5, 4);
+scene.add(sun);
+const camera = new THREE.PerspectiveCamera(30, 1, 0.01, 1000);
+const loader = new GLTFLoader();
+
+async function one(url) {
+  const gltf = await loader.loadAsync(url);
+  const root = gltf.scene;
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  let tris = 0;
+  root.traverse((n) => {
+    if (n.isMesh) tris += (n.geometry.index ? n.geometry.index.count : n.geometry.attributes.position.count) / 3;
+  });
+  scene.add(root);
+  const r = Math.max(size.length() / 2, 1e-3);
+  const dist = r / Math.sin((camera.fov * Math.PI) / 360);
+  camera.position.copy(center).add(new THREE.Vector3(1, 0.75, 1.25).normalize().multiplyScalar(dist * 1.05));
+  camera.near = dist / 100;
+  camera.far = dist * 10;
+  camera.updateProjectionMatrix();
+  camera.lookAt(center);
+  renderer.setClearColor(0x000000, 0);
+  renderer.render(scene, camera);
+  const png = renderer.domElement.toDataURL('image/png');
+  scene.remove(root);
+  root.traverse((n) => {
+    n.geometry?.dispose();
+    for (const m of [].concat(n.material || [])) {
+      for (const k of Object.keys(m)) if (m[k]?.isTexture) m[k].dispose();
+      m.dispose();
+    }
+  });
+  return {
+    png,
+    meta: {
+      size: [size.x, size.y, size.z].map((v) => +v.toFixed(3)),
+      animations: (gltf.animations || []).map((a) => a.name),
+      tris: Math.round(tris),
+    },
+  };
+}
+
+window.renderThumbs = async (urls) => {
+  const out = [];
+  for (const u of urls) {
+    try {
+      out.push(await one(u));
+    } catch (err) {
+      out.push({ error: String(err.message || err) });
+    }
+  }
+  return out;
+};
+window.thumbsReady = true;
+</script>
+</body>
+</html>

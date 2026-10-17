@@ -1004,6 +1004,20 @@ api.usage.onChanged((u) => {
   el.textContent = `${Math.round(w.utilization * 100)}% of 5-hour limit`;
 });
 
+/* ---------- Asset library ---------- */
+
+// Shown only while the library downloads (the first launch); it hides once ready.
+function showLibrary(st) {
+  const el = $('#library-status');
+  if (!st) return;
+  const busy = ['download', 'index', 'polyhaven', 'thumbs'].includes(st.step);
+  el.hidden = !busy && st.step !== 'error';
+  el.textContent = st.step === 'error' ? 'Asset library unavailable' : `Art library: ${st.text}`;
+  el.title = st.text || '';
+}
+api.library.onStatus(showLibrary);
+api.library.status().then((r) => r?.ok && showLibrary(r.value));
+
 /* ---------- Keyboard ---------- */
 
 window.addEventListener('keydown', (e) => {
