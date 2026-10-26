@@ -221,6 +221,7 @@ export class Game {
     this.errors = [];
     this.spawnN = 0;
     this.picking = false;
+    this.editing = false; // the Editor tab: frozen at the start, free camera
     this.ui = new Overlay(root, this);
     this.api = makeApi(this);
     this.bindInput();
@@ -459,7 +460,21 @@ export class Game {
 
   paintBadge() {
     if (!this.live) return;
-    this.ui.badge(this.running ? '' : this.pauseReason || 'Paused');
+    this.ui.badge(this.running || this.editing ? '' : this.pauseReason || 'Paused');
+  }
+
+  // The Editor tab shows the world as it is when the game starts (scripts have set it
+  // up, nothing has moved) and hands the camera to the user. Leaving it starts the game.
+  async setEditing(on) {
+    if (on === this.editing) return;
+    this.editing = on;
+    this.running = false;
+    this.ui.el.style.visibility = on ? 'hidden' : '';
+    if (!on) this.engine.exitEditor?.();
+    await this.restart();
+    if (on) this.engine.enterEditor?.();
+    else this.setRunning(true);
+    this.paintBadge();
   }
 
   async restart() {
@@ -486,7 +501,7 @@ export class Game {
     this.mods.clear();
     this.missing.clear();
     await this.build();
-    if (this.running) this.begin();
+    if (this.running || this.editing) this.begin();
     this.post({ gamey: 'restarted', count: this.objs.size });
   }
 
@@ -502,7 +517,11 @@ export class Game {
     window.addEventListener('message', (e) => {
       if (e.source !== window.parent || !e.data || !e.data.gamey) return;
       const d = e.data;
-      if (d.gamey === 'run') this.setRunning(!!d.running, d.reason);
+      if (d.gamey === 'edit') this.setEditing(!!d.on);
+      else if (d.gamey === 'focus') this.engine.focusOn?.(d.id);
+      else if (d.gamey === 'run') {
+        if (!this.editing) this.setRunning(!!d.running, d.reason);
+      }
       else if (d.gamey === 'restart') this.enqueue([{ op: 'restart' }]);
       else if (d.gamey === 'pick') this.setPicking(!!d.on);
       else if (d.gamey === 'select') this.engine.select(d.id || null);

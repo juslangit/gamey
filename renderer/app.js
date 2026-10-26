@@ -465,6 +465,50 @@ function post(msg) {
   frame.contentWindow?.postMessage(msg, '*');
 }
 
+/* ---------- Editor and Game tabs ---------- */
+
+// Editor: the world frozen at its start with a free camera. Game: play it.
+const EDITOR_HELP = {
+  '3d': [['Drag', 'orbit'], ['Right-drag', 'look'], ['Shift-drag', 'pan'], ['Scroll / pinch', 'zoom'], ['WASD · Q E', 'fly'], ['Shift', 'faster'], ['Click', 'select'], ['F / double-click', 'frame'], ['G', 'grid']],
+  '2d': [['Drag', 'pan'], ['Scroll / pinch', 'zoom'], ['Shift-scroll', 'pan'], ['WASD', 'move'], ['Click', 'select'], ['F / double-click', 'frame']],
+};
+
+function setMode(mode, tell = true) {
+  state.mode = mode === 'editor' ? 'editor' : 'game';
+  const editing = state.mode === 'editor';
+  $$('.seg-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === state.mode);
+    b.setAttribute('aria-selected', String(b.dataset.mode === state.mode));
+  });
+  $('.stage').classList.toggle('editing', editing);
+  $('#screen-wrap').classList.toggle('is-editing', editing);
+  paintEditorHelp();
+  try {
+    localStorage.setItem('stageMode', state.mode);
+  } catch {}
+  if (!tell) return;
+  post({ gamey: 'edit', on: editing });
+  if (!editing) {
+    state.running = true;
+    paintPlay();
+  }
+  frame.focus();
+}
+
+function paintEditorHelp() {
+  const el = $('#editor-help');
+  el.hidden = state.mode !== 'editor';
+  el.innerHTML = (EDITOR_HELP[state.gameMode] || EDITOR_HELP['3d']).map(([k, v]) => `<span><b>${k}</b> ${v}</span>`).join('');
+}
+
+$$('.seg-btn').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
+try {
+  state.mode = localStorage.getItem('stageMode') === 'editor' ? 'editor' : 'game';
+} catch {
+  state.mode = 'game';
+}
+setMode(state.mode, false);
+
 function loadPreview() {
   const paused = state.busy && freezeBox.checked;
   state.running = !paused;
@@ -521,7 +565,10 @@ window.addEventListener('message', (e) => {
   if (e.source !== frame.contentWindow || !e.data || !e.data.gamey) return;
   const d = e.data;
   if (d.gamey === 'ready') {
-    if (state.busy && freezeBox.checked) setRunning(false, 'Paused while Claude builds');
+    state.gameMode = d.mode === '3d' ? '3d' : '2d';
+    paintEditorHelp();
+    if (state.mode === 'editor') post({ gamey: 'edit', on: true });
+    else if (state.busy && freezeBox.checked) setRunning(false, 'Paused while Claude builds');
     else post({ gamey: 'run', running: state.running });
     if (state.picking) post({ gamey: 'pick', on: true });
     if (state.selected) post({ gamey: 'select', id: state.selected });
@@ -533,6 +580,9 @@ window.addEventListener('message', (e) => {
     $('.tab[data-tab="chat"]').click();
     $('#prompt').placeholder = `What should change about ${d.id}?`;
     $('#prompt').focus();
+  } else if (d.gamey === 'selected') {
+    selectObject(d.id || null, false);
+    $(`#objects li[data-id="${CSS.escape(d.id || '')}"]`)?.scrollIntoView({ block: 'nearest' });
   } else if (d.gamey === 'pickCancel') {
     setPicking(false);
   }
@@ -577,6 +627,11 @@ function objectLi(o) {
   li.innerHTML = '<span class="ic"></span><span class="n"></span><span class="t"></span>';
   paintLi(li, o);
   li.addEventListener('click', () => selectObject(state.selected === o.id ? null : o.id));
+  // In the Editor tab a double-click flies the camera to the object.
+  li.addEventListener('dblclick', () => {
+    selectObject(o.id);
+    post({ gamey: 'focus', id: o.id });
+  });
   return li;
 }
 
@@ -1023,7 +1078,10 @@ api.library.status().then((r) => r?.ok && showLibrary(r.value));
 window.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.activeElement?.closest?.('.CodeMirror');
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (e.key === 'p' || e.key === 'P') $('#play').click();
+  if (e.key === 'e' || e.key === 'E') setMode('editor');
+  else if (e.key === 'g' || e.key === 'G') setMode('game');
+  else if (state.mode === 'editor') return;
+  else if (e.key === 'p' || e.key === 'P') $('#play').click();
   else if (e.key === 'r' || e.key === 'R') $('#restart').click();
 });
 

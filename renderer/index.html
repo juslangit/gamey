@@ -86,12 +86,16 @@
 
     <main class="stage">
       <div class="stage-bar">
-        <button id="play" class="btn small" title="Play or pause the game (P)" aria-label="Pause">
+        <div class="seg" role="tablist" aria-label="Stage">
+          <button class="seg-btn" data-mode="editor" role="tab" title="Fly around the world with the game paused (E)">Editor</button>
+          <button class="seg-btn" data-mode="game" role="tab" title="Play the game (G)">Game</button>
+        </div>
+        <button id="play" class="btn small game-only" title="Play or pause the game (P)" aria-label="Pause">
           <svg class="i-pause" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M8 5v14M16 5v14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
           <svg class="i-play" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M7 4.5v15l12-7.5z" fill="currentColor"/></svg>
           <span id="play-label">Pause</span>
         </button>
-        <button id="restart" class="btn small ghost" title="Start the game again (R)">
+        <button id="restart" class="btn small ghost game-only" title="Start the game again (R)">
           <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7M4 4v4.5h4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           Restart
         </button>
@@ -99,7 +103,7 @@
           <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M5 3l14 7-6 2-2 6z" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>
           Point &amp; change
         </button>
-        <label class="toggle" title="Freeze the game while Claude builds, so you can watch each piece arrive">
+        <label class="toggle game-only" title="Freeze the game while Claude builds, so you can watch each piece arrive">
           <input type="checkbox" id="freeze" checked> <span>Pause while building</span>
         </label>
         <div class="spacer"></div>
@@ -118,6 +122,7 @@
             <span class="pulse"></span><span id="building-text">Claude is building</span>
           </div>
           <div class="pick-hint" id="pick-hint" hidden>Click something in the game · Esc to cancel</div>
+          <div class="editor-help" id="editor-help" hidden></div>
           <div class="empty-stage" id="empty-stage" hidden>
             <div>
               <div class="empty-grid" aria-hidden="true"></div>

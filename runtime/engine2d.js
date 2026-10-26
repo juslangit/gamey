@@ -1,6 +1,7 @@
 // The 2D engine: Phaser 3 with Arcade physics. Positions are in pixels, x/y is the
 // centre of an object, and y grows downwards.
 import { BaseObj, cssColor, cssInt, changed } from './core.js';
+import { EditorCam2D } from './editor2d.js';
 
 const ACCENT = 0x8b7bff;
 
@@ -127,6 +128,7 @@ export class Engine {
     phys.add.overlap(this.movers, this.sens, hit);
     phys.add.overlap(this.sens, undefined, hit);
     this.applySettings(settings, {}, false);
+    this.editor = new EditorCam2D(this);
     // Keep the HUD on top of the game picture, not over the letterbox bars.
     const fit = () => this.fitUi();
     this.phaser.scale.on('resize', fit);
@@ -193,6 +195,7 @@ export class Engine {
     const ww = s.worldWidth || w;
     const wh = s.worldHeight || h;
     S.physics.world.setBounds(0, 0, ww, wh);
+    if (this.editor?.on) return; // the Editor tab's camera is free
     S.cameras.main.setBounds(0, 0, ww, wh);
     if (old.camera?.follow && old.camera.follow !== s.camera?.follow) S.cameras.main.stopFollow();
     if (!s.camera?.follow) S.cameras.main.setScroll(s.camera?.x || 0, s.camera?.y || 0);
@@ -200,7 +203,27 @@ export class Engine {
     this.followFromSettings();
   }
 
+  enterEditor() {
+    this.editor.enable();
+  }
+
+  exitEditor() {
+    this.editor.disable();
+    const s = this.settings;
+    const cam = this.scene.cameras.main;
+    cam.setZoom(s.camera?.zoom || 1);
+    cam.setBounds(0, 0, s.worldWidth || this.width, s.worldHeight || this.height);
+    if (!s.camera?.follow) cam.setScroll(s.camera?.x || 0, s.camera?.y || 0);
+    this.followFromSettings();
+  }
+
+  focusOn(id) {
+    const obj = this.game.objs.get(id);
+    if (obj && this.editor.on) this.editor.focus(obj);
+  }
+
   followFromSettings() {
+    if (this.editor?.on) return;
     const id = this.settings.camera?.follow;
     const obj = id && this.game.objs.get(id);
     if (obj) this.scene.cameras.main.startFollow(obj.view, true, this.settings.camera.lerp ?? 0.12, this.settings.camera.lerp ?? 0.12);
@@ -218,6 +241,7 @@ export class Engine {
     }
     g.tick(Math.min(dt, 0.05));
     this.animate(Math.min(dt, 0.05));
+    this.editor?.update(Math.min(dt, 0.05));
     g.flushContacts();
     this.paintSelection();
     g.endFrame();

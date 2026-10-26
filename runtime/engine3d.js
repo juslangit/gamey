@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { BaseObj, cssColor, changed } from './core.js';
+import { EditorCam3D } from './editor3d.js';
 import { buildTerrain, waterMesh, modelParts, scatterPlaces, buildScatter, buildGrass, Atmosphere, Finish, TIME, FOCUS, FOCUS_ON, recolor } from './world3d.js';
 
 // Object types that make up the world itself; any change to one rebuilds it.
@@ -123,6 +124,7 @@ export class Engine {
     this.solids = new Set();
     this.atmos = new Atmosphere(r, this.scene);
     this.finish = new Finish(r, this.scene, this.camera);
+    this.editor = new EditorCam3D(this);
     this.resize();
     new ResizeObserver(() => this.resize()).observe(root);
     this.applySettings(settings, {}, false);
@@ -254,7 +256,7 @@ export class Engine {
     this.camera.updateProjectionMatrix();
     this.followOffset = new THREE.Vector3(cam.offset?.x ?? 0, cam.offset?.y ?? 6, cam.offset?.z ?? 10);
     this.follow = cam.follow ? this.game.objs.get(cam.follow) || null : null;
-    if (!this.follow || !old.camera) {
+    if ((!this.follow || !old.camera) && !this.editor?.on) {
       this.camera.position.set(cam.x ?? 0, cam.y ?? 8, cam.z ?? 14);
       const l = cam.lookAt || { x: 0, y: 0, z: 0 };
       this.camera.lookAt(l.x ?? 0, l.y ?? 0, l.z ?? 0);
@@ -271,6 +273,7 @@ export class Engine {
     const g = this.game;
     TIME.value += dt;
     this.autoQuality(dt);
+    this.editor.update(dt);
     g.tick(dt);
     if (g.active) this.step(dt);
     g.flushContacts();
@@ -284,6 +287,26 @@ export class Engine {
     }
     this.finish.render(dt);
     g.endFrame();
+  }
+
+  // The Editor tab: start the free camera where the game's camera would be.
+  enterEditor() {
+    if (this.follow?.alive) {
+      const t = this.follow.view.position;
+      this.camera.position.copy(t).add(this.followOffset);
+      this.camera.lookAt(t.x, t.y + 1, t.z);
+    }
+    this.shake = null;
+    this.editor.enable();
+  }
+
+  exitEditor() {
+    this.editor.disable();
+  }
+
+  focusOn(id) {
+    const obj = this.game.objs.get(id);
+    if (obj && this.editor.on) this.editor.focus(obj);
   }
 
   // When the game runs slowly for a few seconds, trade sharpness for smoothness.
@@ -307,6 +330,11 @@ export class Engine {
   updateCamera(dt) {
     const cam = this.camera;
     if (this.follow && !this.follow.alive) this.follow = this.game.objs.get(this.follow.id) || null;
+    if (this.editor.on) {
+      FOCUS_ON.value = 0;
+      this.placeSun(this.editor.pivot);
+      return;
+    }
     FOCUS_ON.value = this.follow ? 1 : 0;
     if (this.follow) {
       const t = this.follow.view.position;
